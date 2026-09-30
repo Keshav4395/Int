@@ -1,0 +1,223 @@
+Data Preprocessing with Python, NumPy & Pandas
+
+Task: Learn Python fundamentals, NumPy, Pandas and preprocessing; clean a sample dataset and document every step.
+
+Dataset: Titanic passenger data (891 rows, 12 columns). Target: Survived. It is a good teaching dataset because it has everything messy at once: missing values (Age, Cabin, Embarked), mixed types, categorical features, skewed numerics (Fare), and useless identifier columns.
+
+Pipeline
+
+1. Python + NumPy + Pandas quick primer
+2. Load & inspect
+3. Handle duplicates, missing values, outliers
+4. Feature engineering & feature selection
+5. Encode categorical variables
+6. Train/test split, then normalization
+7. Exploratory data analysis
+8. Preprocessing log + save the cleaned data
+
+
+Setup from the start
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+
+log = []
+def record(step, action, reason):
+    log.append({"step": step, "action": action, "reason": reason})
+
+The log list is used to keep a record of every preprocessing decision, so the final report is easy to write.
+
+
+1. Primer: Python, NumPy, Pandas (the parts that matter for ML)
+
+Python fundamentals used constantly in ML code are lists and dictionaries, comprehensions, functions, slicing. NumPy gives fast vectorized arrays (no Python loops). Pandas builds labelled tables (DataFrame) on top of NumPy.
+
+Python example:
+
+squares = [x**2 for x in range(6)]
+person = {"name": "Keshav", "skills": ["python", "ml"]}
+def zscore(v, mean, std):
+    return (v - mean) / std
+
+Output: [0, 1, 4, 9, 16, 25] and zscore(10, 5, 2) = 2.5
+
+NumPy example:
+
+a = np.array([[1, 2, 3], [4, 5, 6]])
+a.mean(axis=0)              gives [2.5 3.5 4.5]
+a + np.array([10, 20, 30])  broadcasting, adds the vector to every row
+a[a > 3]                    boolean mask, gives [4 5 6]
+np.nanmean([1, np.nan, 3])  gives 2.0, ignores the missing value
+
+Pandas example:
+
+df_demo = pd.DataFrame({"x": [1, 2, 3, 4], "g": ["a", "a", "b", "b"]})
+df_demo[df_demo.x > 2]                  filters rows
+df_demo.groupby("g")["x"].mean()        gives a = 1.5, b = 3.5
+
+groupby is used later to fill missing ages.
+
+
+2. Load & inspect
+
+We check shape, data types, missing counts, and summary stats.
+
+df = pd.read_csv("titanic.csv")
+raw = df.copy()
+print(df.shape)
+
+Shape is (891, 12). Columns: PassengerId, Survived, Pclass, Name, Sex, Age, SibSp, Parch, Ticket, Fare, Cabin, Embarked.
+
+Missing values: Age 177 (19.9%), Cabin 687 (77.1%), Embarked 2 (0.2%).
+Duplicate rows: 0.
+
+Summary stats for Age: mean 29.70, median 28, min 0.42, max 80.
+Summary stats for Fare: mean 32.20, median 14.45, min 0, max 512.33.
+
+Observations:
+Age is about 20% missing, Cabin about 77%, Embarked only 2 rows.
+PassengerId, Name and Ticket are identifiers or free text, so they cannot be used directly as features.
+Sex and Embarked are text categories. Pclass is numeric but really an ordered category.
+Fare is right-skewed. The mean (32.20) is more than double the median (14.45).
+
+
+3. Handle duplicates, missing values, outliers
+
+3.1 Duplicates
+
+df = df.drop_duplicates()
+
+No duplicates were found, so 0 rows were removed. The check is still a standard step.
+
+3.2 Missing values
+
+Each column got its own strategy.
+
+Cabin (77% missing): created a HasCabin flag (1 if a cabin was recorded, else 0) and dropped the original column. It is too sparse to fill in, but having a cabin recorded still carries information.
+
+Embarked (2 missing): filled with the mode, which is "S". Only two rows, and it is categorical.
+
+Age (20% missing): filled with the median age of the passenger's (Pclass, Sex) group, and added an Age_missing flag. Age differs across these groups, and the median is not affected by outliers.
+
+df["HasCabin"] = df["Cabin"].notna().astype(int)
+df = df.drop(columns="Cabin")
+df["Embarked"] = df["Embarked"].fillna(df["Embarked"].mode()[0])
+df["Age_missing"] = df["Age"].isna().astype(int)
+df["Age"] = df["Age"].fillna(df.groupby(["Pclass", "Sex"])["Age"].transform("median"))
+
+After this, 0 missing values remain.
+
+3.3 Outliers
+
+Used the IQR rule: values outside Q1 - 1.5*IQR and Q3 + 1.5*IQR are outliers.
+Age: 33 outliers. Fare: 116 outliers.
+
+The outliers were not deleted, because old passengers and expensive first-class tickets are real data. Instead the skew in Fare was reduced with a log transform.
+
+df["Fare_log"] = np.log1p(df["Fare"])
+
+log1p is log(1 + x), so a Fare of 0 does not cause an error.
+
+
+4. Feature engineering & feature selection
+
+Engineering:
+Title, extracted from Name (Mr, Mrs, Miss, Master; anything else grouped as Rare).
+FamilySize = SibSp + Parch + 1.
+IsAlone = 1 if FamilySize is 1, else 0.
+
+df["Title"] = df["Name"].str.extract(r",\s*([^\.]+)\.", expand=False).str.strip()
+df["Title"] = df["Title"].replace({"Mlle": "Miss", "Ms": "Miss", "Mme": "Mrs"})
+df["Title"] = df["Title"].where(df["Title"].isin(["Mr","Mrs","Miss","Master"]), "Rare")
+df["FamilySize"] = df["SibSp"] + df["Parch"] + 1
+df["IsAlone"] = (df["FamilySize"] == 1).astype(int)
+
+Title counts: Mr 517, Miss 185, Mrs 126, Master 40, Rare 23.
+
+Selection:
+Dropped PassengerId, Name, Ticket (identifiers or text with no useful signal), Fare (replaced by Fare_log), and SibSp, Parch (redundant, since FamilySize is built from them).
+
+A correlation check showed Pclass and Fare_log at about -0.66. That is expected, but not high enough to drop either one.
+
+
+5. Encode categorical variables
+
+Sex: label encoded, male = 0, female = 1.
+Embarked and Title: one-hot encoded with drop_first=True, because they have no natural order. drop_first avoids the dummy variable trap.
+Pclass: kept as it is, since 1, 2, 3 is a real order.
+
+df["Sex"] = df["Sex"].map({"male": 0, "female": 1})
+df = pd.get_dummies(df, columns=["Embarked", "Title"], drop_first=True, dtype=int)
+
+Final columns (15): Survived, Pclass, Sex, Age, HasCabin, Age_missing, Fare_log, FamilySize, IsAlone, Embarked_Q, Embarked_S, Title_Miss, Title_Mr, Title_Mrs, Title_Rare.
+
+
+6. Train/test split, then normalization
+
+The split is done before scaling. If the mean and standard deviation were computed on the full data, test set information would leak into training.
+
+X = df.drop(columns="Survived")
+y = df["Survived"]
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+This gives 712 training rows and 179 test rows. stratify=y keeps the survival ratio the same in both sets, which matters because only about 38% survived.
+
+StandardScaler (z-score) was applied to Age, Fare_log and FamilySize. It is fitted on the training data only and then applied to both sets.
+
+scale_cols = ["Age", "Fare_log", "FamilySize"]
+scaler = StandardScaler().fit(X_train[scale_cols])
+X_train[scale_cols] = scaler.transform(X_train[scale_cols])
+X_test[scale_cols] = scaler.transform(X_test[scale_cols])
+
+Check: the training mean is 0 and the standard deviation is about 1. The test mean is close to 0 but not exact (-0.07, 0.06, 0.07), which is correct because the test set uses the training statistics.
+
+The 0/1 columns were not scaled. Min-Max scaling (0 to 1) is an alternative, but it is more sensitive to outliers.
+
+Note: the group medians used to fill Age were computed on the full data before the split, which is a very small leakage. In a real pipeline this would be fitted on the training data only.
+
+
+7. Exploratory data analysis
+
+Overall survival rate: 38.4%.
+By sex: female 74.2%, male 18.9%.
+By class: 1st 63.0%, 2nd 47.3%, 3rd 24.2%.
+By family size: 1 person 30%, 2 people 55%, 3 people 58%, 4 people 72%, 5 or more mostly 0% to 33%.
+Children under 13: 58%. Everyone else: 37%.
+
+Findings:
+Sex is the strongest predictor. Women survived at about four times the rate of men.
+Survival drops sharply with class.
+Children had a better chance than adults.
+Small families (2 to 4 people) did best. Solo travellers and large families did worse.
+The target is imbalanced (38% survived), which is why the split was stratified.
+
+
+8. Preprocessing log + save the cleaned data
+
+Before: 891 rows, 12 columns, 866 missing cells, 5 text columns.
+After: 891 rows, 15 columns, 0 missing cells, 0 text columns.
+
+Log of every step:
+
+1. Duplicates: checked, dropped 0 rows. Duplicates would bias the model.
+2. Missing, Cabin: created HasCabin flag, dropped Cabin. 77% missing, but presence carries signal.
+3. Missing, Embarked: filled 2 values with mode "S". Very few missing, categorical.
+4. Missing, Age: filled with median by (Pclass, Sex) and added Age_missing flag. Group median is more accurate than a global one.
+5. Outliers, Fare: kept them and added Fare_log = log1p(Fare). High fares are real; log reduces skew.
+6. Feature engineering: added Title, FamilySize, IsAlone. Extracts signal from text and combines related columns.
+7. Feature selection: dropped PassengerId, Name, Ticket, Fare. Identifiers carry no signal; Fare replaced by Fare_log.
+8. Feature selection: dropped SibSp, Parch. Redundant with FamilySize.
+9. Encoding: Sex to 0/1, one-hot for Embarked and Title. Models need numeric input.
+10. Split: 80/20 stratified, random_state=42. Gives an honest evaluation on unseen data.
+11. Normalization: StandardScaler on Age, Fare_log, FamilySize, fitted on train only. Puts features on a comparable scale and avoids leakage.
+
+Saving:
+
+df.to_csv("titanic_cleaned.csv", index=False)
+log_df.to_csv("preprocessing_log.csv")
+
+Conclusion: the raw dataset was converted into a fully numeric, missing-value-free, scaled dataset ready for a model, and every step is documented above with its reason. Next step would be training a baseline model such as Logistic Regression or Random Forest.
